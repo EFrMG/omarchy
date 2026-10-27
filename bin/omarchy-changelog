@@ -17,21 +17,36 @@ cache_file="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/changelog-releases.json"
 # last fetch and nothing has to be maintained in the repo. The cache only
 # serves the next run when GitHub cannot be reached.
 fetch_releases() {
-  local tmp
+  local tmp pages json count page
 
   mkdir -p "${cache_file%/*}"
-  if ! tmp=$(mktemp "$cache_file.XXXXXX"); then
+  tmp=$(mktemp "$cache_file.XXXXXX") || return 1
+  pages=$(mktemp) || { rm -f "$tmp"; return 1; }
+
+  # One page of 100 covers every release today; follow further pages so older
+  # notes do not fall off once the repository outgrows a page.
+  page=1
+  while :; do
+    if ! json=$(curl -fsSL --max-time 15 "$releases_url&page=$page") ||
+      ! jq -e 'type == "array"' >/dev/null <<<"$json"; then
+      rm -f "$tmp" "$pages"
+      return 1
+    fi
+    jq -c '.' <<<"$json" >>"$pages"
+    count=$(jq 'length' <<<"$json")
+    if (( count < 100 )); then
+      break
+    fi
+    page=$(( page + 1 ))
+  done
+
+  if ! jq -s 'add' "$pages" >"$tmp" || ! jq -e 'length > 0' "$tmp" >/dev/null; then
+    rm -f "$tmp" "$pages"
     return 1
   fi
 
-  if curl -fsSL --max-time 15 "$releases_url" >"$tmp" &&
-    jq -e 'type == "array" and length > 0' "$tmp" >/dev/null; then
-    mv "$tmp" "$cache_file"
-    return 0
-  fi
-
-  rm -f "$tmp"
-  return 1
+  mv "$tmp" "$cache_file"
+  rm -f "$pages"
 }
 
 offline=0
@@ -126,7 +141,7 @@ while :; do
 
   chosen=""
   for (( g = 0; g < group_count; g++ )); do
-    if [[ ${options[g]} == "$selection" ]]; then
+    if [[ ${options[g]} == $selection ]]; then
       chosen=$g
       break
     fi
